@@ -18,13 +18,12 @@ async def get_csrf_and_cookies():
     url = "https://www.dtek-krem.com.ua/ua/shutdowns"
     async with aiohttp.ClientSession() as session:
         async with session.get(url) as resp:
-            html = await resp.text()
             cookies = resp.cookies
             csrf = cookies.get("_csrf-dtek-krem").value if "_csrf-dtek-krem" in cookies else None
             return csrf, cookies
 
 # ====== Запрос графика через AJAX ======
-async def fetch_schedule(session, csrf, cookies):
+async def fetch_schedule(session, csrf, cookies_dict):
     headers = {
         "User-Agent": "Mozilla/5.0",
         "X-Requested-With": "XMLHttpRequest",
@@ -34,19 +33,20 @@ async def fetch_schedule(session, csrf, cookies):
     }
     data = {"_csrf": csrf, "address": ADDRESS}
 
-    async with session.post(DTEK_URL, headers=headers, data=data, cookies=cookies) as resp:
+    async with session.post(DTEK_URL, headers=headers, data=data, cookies=cookies_dict) as resp:
         json_data = await resp.json()
+
         # ===== Безопасная обработка графика =====
         schedule_list = json_data.get("schedule") or json_data.get("data") or []
+
         if not isinstance(schedule_list, list):
-            # Если данные в словаре, ключи — даты
             temp_list = []
             if isinstance(schedule_list, dict):
                 for k, v in schedule_list.items():
                     if isinstance(v, dict):
-                        date = k
+                        date = str(k)
                         time_range = str(v.get("time", ""))
-                        temp_list.append({"date": str(date), "time": time_range})
+                        temp_list.append({"date": date, "time": time_range})
             schedule_list = temp_list
 
         result = ""
@@ -61,14 +61,20 @@ async def fetch_schedule(session, csrf, cookies):
 async def check_schedule():
     global last_schedule
     csrf, cookies = await get_csrf_and_cookies()
+    
+    # преобразуем куки в простой словарь
+    cookies_dict = {k: v.value for k, v in cookies.items()}
+
     async with aiohttp.ClientSession() as session:
         try:
-            schedule = await fetch_schedule(session, csrf, cookies)
+            schedule = await fetch_schedule(session, csrf, cookies_dict)
             if schedule != last_schedule:
                 await bot.send_message(chat_id=CHAT_ID, text="🔔 График отключений обновился:\n" + schedule)
                 last_schedule = schedule
         except Exception as e:
             await bot.send_message(chat_id=CHAT_ID, text=f"Ошибка при проверке графика: {e}")
+    
+    # планируем следующую проверку
     await asyncio.sleep(CHECK_INTERVAL)
     asyncio.create_task(check_schedule())
 
