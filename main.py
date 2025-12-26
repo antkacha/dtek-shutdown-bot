@@ -3,6 +3,7 @@ import json
 import hashlib
 import time
 import os
+import re
 from telegram import Bot
 
 # --- Переменные окружения ---
@@ -18,36 +19,50 @@ bot = Bot(BOT_TOKEN)
 ADDRESS = {
     "address": "с-ще Коцюбинське, вулиця Паризька, будинок 3"
 }
+MAIN_PAGE_URL = "https://www.dtek-krem.com.ua/ua/shutdowns"
 API_URL = "https://www.dtek-krem.com.ua/api/shutdowns"
 CHECK_INTERVAL = 60  # проверка каждые 60 секунд
-
 last_hash = None
 
-# --- Получение данных с сайта DTEK ---
+# --- Получение данных с сайта DTEK с куками и CSRF ---
 def get_data():
     session = requests.Session()
-    session.headers.update({
-        "User-Agent": "Mozilla/5.0",
-        "Accept": "application/json, text/javascript, */*; q=0.01",
-        "Content-Type": "application/json"
-    })
+    session.headers.update({"User-Agent": "Mozilla/5.0"})
+
     try:
-        r = session.post(API_URL, json=ADDRESS, timeout=15)
-        print("HTTP status:", r.status_code)
+        # Получаем главную страницу и куки
+        r = session.get(MAIN_PAGE_URL, timeout=15)
         if r.status_code != 200:
-            print("❌ Сервер вернул статус", r.status_code)
+            print("❌ Не удалось получить страницу, статус:", r.status_code)
             return {}
 
-        try:
-            return r.json()
-        except json.JSONDecodeError:
-            print("❌ Сервер вернул невалидный JSON:", r.text[:200])
+        # Извлекаем CSRF-токен
+        match = re.search(r'name="__RequestVerificationToken" value="(.+?)"', r.text)
+        csrf_token = match.group(1) if match else None
+        if not csrf_token:
+            print("❌ CSRF токен не найден")
             return {}
+
+        # Делаем POST с токеном и куками
+        headers = {
+            "User-Agent": "Mozilla/5.0",
+            "Content-Type": "application/json",
+            "X-CSRF-Token": csrf_token
+        }
+        r_post = session.post(API_URL, json=ADDRESS, headers=headers, timeout=15)
+
+        try:
+            data = r_post.json()
+            return data
+        except json.JSONDecodeError:
+            print("❌ Сервер вернул невалидный JSON:", r_post.text[:200])
+            return {}
+
     except requests.RequestException as e:
         print("❌ Ошибка запроса:", e)
         return {}
 
-# --- Создание хеша данных ---
+# --- Хеширование данных для отслеживания изменений ---
 def make_hash(data):
     return hashlib.md5(json.dumps(data, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
