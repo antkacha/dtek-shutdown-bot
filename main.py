@@ -1,108 +1,67 @@
 import requests
-import json
-import hashlib
-import time
-import os
-import re
-from telegram import Bot
+from bs4 import BeautifulSoup
+from telegram import Update
+from telegram.ext import Updater, CommandHandler, CallbackContext
 
-# --- Переменные окружения ---
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
-CHAT_ID = os.environ.get("CHAT_ID")
+# ====== НАСТРОЙКИ ======
+TOKEN = "ВАШ_API_ТОКЕН"  # токен бота от BotFather
+ADDRESS = "с-ще Коцюбинське, вулиця Паризька, будинок 3"
+DTEK_URL = "https://www.dtek-krem.com.ua/ua/shutdowns"
 
-if not BOT_TOKEN or not CHAT_ID:
-    raise ValueError("Не установлены BOT_TOKEN или CHAT_ID")
-
-bot = Bot(BOT_TOKEN)
-
-# --- Настройки DTEK ---
-ADDRESS = {
-    "address": "с-ще Коцюбинське, вулиця Паризька, будинок 3"
-}
-MAIN_PAGE_URL = "https://www.dtek-krem.com.ua/ua/shutdowns"
-API_URL = "https://www.dtek-krem.com.ua/api/shutdowns"
-CHECK_INTERVAL = 60  # проверка каждые 60 секунд
-last_hash = None
-
-# --- Получение данных с сайта DTEK с куками и CSRF ---
-def get_data():
+# ====== ФУНКЦИЯ ПАРСИНГА ======
+def get_shutdown_schedule(address):
     session = requests.Session()
-    session.headers.update({"User-Agent": "Mozilla/5.0"})
+    
+    # Заголовки для имитации браузера
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+    }
 
-    try:
-        # Получаем главную страницу и куки
-        r = session.get(MAIN_PAGE_URL, timeout=15)
-        if r.status_code != 200:
-            print("❌ Не удалось получить страницу, статус:", r.status_code)
-            return {}
+    # GET страница, чтобы получить cookies и csrf
+    r = session.get(DTEK_URL, headers=headers)
+    soup = BeautifulSoup(r.text, "html.parser")
+    
+    # Можно добавить поиск CSRF-токена, если требуется форма
+    csrf = soup.find("input", {"name": "_csrf"})
+    csrf_token = csrf["value"] if csrf else ""
 
-        # Извлекаем CSRF-токен
-        match = re.search(r'name="__RequestVerificationToken" value="(.+?)"', r.text)
-        csrf_token = match.group(1) if match else None
-        if not csrf_token:
-            print("❌ CSRF токен не найден")
-            return {}
+    # Отправка формы для поиска по адресу (примерный POST, структура может меняться)
+    data = {
+        "_csrf": csrf_token,
+        "address": address
+    }
 
-        # Делаем POST с токеном и куками
-        headers = {
-            "User-Agent": "Mozilla/5.0",
-            "Content-Type": "application/json",
-            "X-CSRF-Token": csrf_token
-        }
-        r_post = session.post(API_URL, json=ADDRESS, headers=headers, timeout=15)
+    r2 = session.post(DTEK_URL, headers=headers, data=data)
+    soup2 = BeautifulSoup(r2.text, "html.parser")
 
-        try:
-            data = r_post.json()
-            return data
-        except json.JSONDecodeError:
-            print("❌ Сервер вернул невалидный JSON:", r_post.text[:200])
-            return {}
+    # Пример парсинга таблицы графиков
+    table = soup2.find("table")
+    if not table:
+        return "График не найден. Попробуйте проверить адрес."
 
-    except requests.RequestException as e:
-        print("❌ Ошибка запроса:", e)
-        return {}
+    result = ""
+    for row in table.find_all("tr")[1:]:  # пропускаем заголовок
+        cols = row.find_all("td")
+        date = cols[0].text.strip()
+        time = cols[1].text.strip()
+        result += f"{date} — {time}\n"
+    
+    return result or "График пустой."
 
-# --- Хеширование данных для отслеживания изменений ---
-def make_hash(data):
-    return hashlib.md5(json.dumps(data, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+# ====== ФУНКЦИИ БОТА ======
+def start(update: Update, context: CallbackContext):
+    update.message.reply_text("Привет! Я бот для отслеживания отключений света 💡\nИспользуй команду /status")
 
-# --- Форматирование сообщения для Telegram ---
-def format_message(data):
-    shutdowns = data.get("shutdowns")
-    if not shutdowns:
-        return "⚡ Відключень електроенергії не заплановано"
+def status(update: Update, context: CallbackContext):
+    update.message.reply_text("Ищу график отключений...")
+    schedule = get_shutdown_schedule(ADDRESS)
+    update.message.reply_text(schedule)
 
-    text = (
-        "⚡ *Графік відключень електроенергії*\n\n"
-        f"📍 {ADDRESS['address']}\n\n"
-    )
-    for s in shutdowns:
-        text += (
-            f"🕒 *{s.get('date','—')}*\n"
-            f"Від: {s.get('time_from','—')}\n"
-            f"До: {s.get('time_to','—')}\n"
-            f"Причина: {s.get('reason','—')}\n\n"
-        )
-    return text
+# ====== ЗАПУСК БОТА ======
+updater = Updater(TOKEN)
+updater.dispatcher.add_handler(CommandHandler("start", start))
+updater.dispatcher.add_handler(CommandHandler("status", status))
 
-# --- Основной цикл ---
-while True:
-    data = get_data()
-    if not data:
-        print("⏳ Нет данных от сервера")
-        time.sleep(CHECK_INTERVAL)
-        continue
+updater.start_polling()
+updater.idle()
 
-    h = make_hash(data)
-    if h != last_hash:
-        message = format_message(data)
-        try:
-            bot.send_message(chat_id=CHAT_ID, text=message, parse_mode="Markdown")
-            print("🔔 Изменения отправлены")
-        except Exception as e:
-            print("❌ Ошибка отправки в Telegram:", e)
-        last_hash = h
-    else:
-        print("⏳ Без изменений")
-
-    time.sleep(CHECK_INTERVAL)
