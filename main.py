@@ -3,36 +3,32 @@ from bs4 import BeautifulSoup
 from telegram import Bot
 import time
 import threading
+import os
 
 # ====== НАСТРОЙКИ ======
-TOKEN = "8309773085:AAEUq_8obxdc2ioRo7NuKCWLpq2cD8eIKUI"  # токен бота
-CHAT_ID = "586571149"   # куда отправлять уведомления
+TOKEN = os.getenv("BOT_TOKEN")   # токен бота из переменной окружения
+CHAT_ID = int(os.getenv("CHAT_ID"))  # Chat ID из переменной окружения
 ADDRESS = "с-ще Коцюбинське, вулиця Паризька, будинок 3"
 DTEK_URL = "https://www.dtek-krem.com.ua/ua/shutdowns"
-CHECK_INTERVAL = 60  # интервал проверки в секундах
+CHECK_INTERVAL = 60  # проверка каждые 60 секунд
 
 bot = Bot(token=TOKEN)
-last_schedule = ""  # сюда будем сохранять предыдущий график
+last_schedule = ""  # для хранения предыдущего графика
 
-# ====== ФУНКЦИЯ ПАРСИНГА ======
+# ====== Функция парсинга графика ======
 def get_shutdown_schedule(address):
     session = requests.Session()
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
     }
 
-    # GET страница, чтобы получить cookies и csrf
     r = session.get(DTEK_URL, headers=headers)
     soup = BeautifulSoup(r.text, "html.parser")
     
     csrf = soup.find("input", {"name": "_csrf"})
     csrf_token = csrf["value"] if csrf else ""
 
-    data = {
-        "_csrf": csrf_token,
-        "address": address
-    }
-
+    data = {"_csrf": csrf_token, "address": address}
     r2 = session.post(DTEK_URL, headers=headers, data=data)
     soup2 = BeautifulSoup(r2.text, "html.parser")
 
@@ -49,7 +45,7 @@ def get_shutdown_schedule(address):
 
     return result or "График пустой."
 
-# ====== ФУНКЦИЯ ПРОВЕРКИ И ОТПРАВКИ ======
+# ====== Функция проверки и отправки ======
 def check_schedule():
     global last_schedule
     try:
@@ -60,16 +56,11 @@ def check_schedule():
     except Exception as e:
         bot.send_message(chat_id=CHAT_ID, text=f"Ошибка при проверке графика: {e}")
 
-    # Запланировать следующую проверку
     threading.Timer(CHECK_INTERVAL, check_schedule).start()
 
-# ====== СТАРТ ======
+# ====== Старт бота ======
 bot.send_message(chat_id=CHAT_ID, text="✅ Бот запущен. Следим за графиком отключений...")
-
-# Запуск проверки
 check_schedule()
 
-# Чтобы скрипт не завершался
 while True:
     time.sleep(1)
-
