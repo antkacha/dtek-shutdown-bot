@@ -1,63 +1,78 @@
 import os
 import asyncio
-import requests
-from bs4 import BeautifulSoup
+import aiohttp
 from telegram import Bot
 
 # ====== НАСТРОЙКИ ======
 TOKEN = os.getenv("BOT_TOKEN")      # токен бота
-CHAT_ID = int(os.getenv("CHAT_ID")) # ID чата для уведомлений
+CHAT_ID = int(os.getenv("CHAT_ID")) # ваш Chat ID
 ADDRESS = "с-ще Коцюбинське, вулиця Паризька, будинок 3"
-DTEK_URL = "https://www.dtek-krem.com.ua/ua/shutdowns"
-CHECK_INTERVAL = 60  # интервал проверки в секундах
+DTEK_URL = "https://www.dtek-krem.com.ua/ua/ajax"
+CHECK_INTERVAL = 60  # проверка каждые 60 секунд
 
 bot = Bot(token=TOKEN)
 last_schedule = ""  # хранение предыдущего графика
 
-# ====== ФУНКЦИЯ ПАРСИНГА ГРАФИКА ======
-def get_shutdown_schedule(address):
-    session = requests.Session()
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+# ====== Функция получения CSRF и куки ======
+async def get_csrf_and_cookies():
+    url = "https://www.dtek-krem.com.ua/ua/shutdowns"
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url) as resp:
+            html = await resp.text()
+            cookies = resp.cookies
+            # CSRF обычно хранится в cookie "_csrf-dtek-krem"
+            csrf = cookies.get("_csrf-dtek-krem").value if "_csrf-dtek-krem" in cookies else None
+            return csrf, cookies
 
-    r = session.get(DTEK_URL, headers=headers)
-    soup = BeautifulSoup(r.text, "html.parser")
-    csrf = soup.find("input", {"name": "_csrf"})
-    csrf_token = csrf["value"] if csrf else ""
+# ====== Функция запроса графика через AJAX ======
+async def fetch_schedule(session, csrf, cookies):
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "X-Requested-With": "XMLHttpRequest",
+        "Origin": "https://www.dtek-krem.com.ua",
+        "Referer": "https://www.dtek-krem.com.ua/ua/shutdowns",
+        "X-CSRF-Token": csrf
+    }
+    data = {
+        "_csrf": csrf,
+        "address": ADDRESS
+    }
 
-    data = {"_csrf": csrf_token, "address": address}
-    r2 = session.post(DTEK_URL, headers=headers, data=data)
-    soup2 = BeautifulSoup(r2.text, "html.parser")
+    async with session.post(DTEK_URL, headers=headers, data=data, cookies=cookies) as resp:
+        json_data = await resp.json()
+        # В json_data ищем график
+        schedule_list = json_data.get("schedule", [])
+        if not schedule_list:
+            return "График пустой или не найден."
+        result = ""
+        for item in schedule_list:
+            date = item.get("date", "")
+            time_range = item.get("time", "")
+            result += f"{date} — {time_range}\n"
+        return result
 
-    table = soup2.find("table")
-    if not table:
-        return "График не найден."
-
-    result = ""
-    for row in table.find_all("tr")[1:]:
-        cols = row.find_all("td")
-        date = cols[0].text.strip()
-        time_range = cols[1].text.strip()
-        result += f"{date} — {time_range}\n"
-    return result or "График пустой."
-
-# ====== АСИНХРОННАЯ ПРОВЕРКА И ОТПРАВКА ======
+# ====== Функция проверки и уведомления ======
 async def check_schedule():
     global last_schedule
-    try:
-        schedule = get_shutdown_schedule(ADDRESS)
-        if schedule != last_schedule:
-            await bot.send_message(chat_id=CHAT_ID, text="🔔 График отключений обновился:\n" + schedule)
-            last_schedule = schedule
-    except Exception as e:
-        await bot.send_message(chat_id=CHAT_ID, text=f"Ошибка при проверке графика: {e}")
-    # запланировать следующую проверку
+    csrf, cookies = await get_csrf_and_cookies()
+    async with aiohttp.ClientSession() as session:
+        try:
+            schedule = await fetch_schedule(session, csrf, cookies)
+            if schedule != last_schedule:
+                await bot.send_message(chat_id=CHAT_ID, text="🔔 График отключений обновился:\n" + schedule)
+                last_schedule = schedule
+        except Exception as e:
+            await bot.send_message(chat_id=CHAT_ID, text=f"Ошибка при проверке графика: {e}")
+    # планируем следующую проверку
     await asyncio.sleep(CHECK_INTERVAL)
     asyncio.create_task(check_schedule())
 
-# ====== ЗАПУСК ======
+# ====== Старт бота ======
 async def main():
     await bot.send_message(chat_id=CHAT_ID, text="✅ Бот запущен. Следим за графиком отключений...")
-    await check_schedule()  # старт проверки
+    asyncio.create_task(check_schedule())
+    while True:
+        await asyncio.sleep(10)  # держим цикл живым
 
 if __name__ == "__main__":
     asyncio.run(main())
