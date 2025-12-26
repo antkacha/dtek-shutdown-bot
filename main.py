@@ -1,18 +1,22 @@
 import requests
 from bs4 import BeautifulSoup
-from telegram import Update
-from telegram.ext import Updater, CommandHandler, CallbackContext
+from telegram import Bot
+import time
+import threading
 
 # ====== НАСТРОЙКИ ======
-TOKEN = "ВАШ_API_ТОКЕН"  # токен бота от BotFather
+TOKEN = "ВАШ_API_ТОКЕН"  # токен бота
+CHAT_ID = "ВАШ_CHAT_ID"   # куда отправлять уведомления
 ADDRESS = "с-ще Коцюбинське, вулиця Паризька, будинок 3"
 DTEK_URL = "https://www.dtek-krem.com.ua/ua/shutdowns"
+CHECK_INTERVAL = 60  # интервал проверки в секундах
+
+bot = Bot(token=TOKEN)
+last_schedule = ""  # сюда будем сохранять предыдущий график
 
 # ====== ФУНКЦИЯ ПАРСИНГА ======
 def get_shutdown_schedule(address):
     session = requests.Session()
-    
-    # Заголовки для имитации браузера
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
     }
@@ -21,11 +25,9 @@ def get_shutdown_schedule(address):
     r = session.get(DTEK_URL, headers=headers)
     soup = BeautifulSoup(r.text, "html.parser")
     
-    # Можно добавить поиск CSRF-токена, если требуется форма
     csrf = soup.find("input", {"name": "_csrf"})
     csrf_token = csrf["value"] if csrf else ""
 
-    # Отправка формы для поиска по адресу (примерный POST, структура может меняться)
     data = {
         "_csrf": csrf_token,
         "address": address
@@ -34,34 +36,40 @@ def get_shutdown_schedule(address):
     r2 = session.post(DTEK_URL, headers=headers, data=data)
     soup2 = BeautifulSoup(r2.text, "html.parser")
 
-    # Пример парсинга таблицы графиков
     table = soup2.find("table")
     if not table:
-        return "График не найден. Попробуйте проверить адрес."
+        return "График не найден."
 
     result = ""
-    for row in table.find_all("tr")[1:]:  # пропускаем заголовок
+    for row in table.find_all("tr")[1:]:
         cols = row.find_all("td")
         date = cols[0].text.strip()
-        time = cols[1].text.strip()
-        result += f"{date} — {time}\n"
-    
+        time_range = cols[1].text.strip()
+        result += f"{date} — {time_range}\n"
+
     return result or "График пустой."
 
-# ====== ФУНКЦИИ БОТА ======
-def start(update: Update, context: CallbackContext):
-    update.message.reply_text("Привет! Я бот для отслеживания отключений света 💡\nИспользуй команду /status")
+# ====== ФУНКЦИЯ ПРОВЕРКИ И ОТПРАВКИ ======
+def check_schedule():
+    global last_schedule
+    try:
+        schedule = get_shutdown_schedule(ADDRESS)
+        if schedule != last_schedule:
+            bot.send_message(chat_id=CHAT_ID, text="🔔 График отключений обновился:\n" + schedule)
+            last_schedule = schedule
+    except Exception as e:
+        bot.send_message(chat_id=CHAT_ID, text=f"Ошибка при проверке графика: {e}")
 
-def status(update: Update, context: CallbackContext):
-    update.message.reply_text("Ищу график отключений...")
-    schedule = get_shutdown_schedule(ADDRESS)
-    update.message.reply_text(schedule)
+    # Запланировать следующую проверку
+    threading.Timer(CHECK_INTERVAL, check_schedule).start()
 
-# ====== ЗАПУСК БОТА ======
-updater = Updater(TOKEN)
-updater.dispatcher.add_handler(CommandHandler("start", start))
-updater.dispatcher.add_handler(CommandHandler("status", status))
+# ====== СТАРТ ======
+bot.send_message(chat_id=CHAT_ID, text="✅ Бот запущен. Следим за графиком отключений...")
 
-updater.start_polling()
-updater.idle()
+# Запуск проверки
+check_schedule()
+
+# Чтобы скрипт не завершался
+while True:
+    time.sleep(1)
 
