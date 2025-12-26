@@ -5,72 +5,94 @@ import time
 import os
 from telegram import Bot
 
-BOT_TOKEN = os.environ["BOT_TOKEN"]
-CHAT_ID = os.environ["CHAT_ID"]
+# --- Переменные окружения ---
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+CHAT_ID = os.environ.get("CHAT_ID")
 
-ADDRESS = {
-    "city": "Коцюбинське",
-    "street": "Паризька",
-    "house": "3"
-}
+if not BOT_TOKEN or not CHAT_ID:
+    raise ValueError("Не установлены BOT_TOKEN или CHAT_ID")
 
-API_URL = "https://www.dtek-krem.com.ua/api/shutdowns"
-CHECK_INTERVAL = 60
-
+# --- Настройка Telegram ---
 bot = Bot(BOT_TOKEN)
+
+# --- Настройки DTEK ---
+ADDRESS = {
+    "address": "с-ще Коцюбинське, вулиця Паризька, будинок 3"
+}
+API_URL = "https://www.dtek-krem.com.ua/api/shutdowns"
+CHECK_INTERVAL = 60  # Проверка каждые 60 секунд
+
 last_hash = None
 
+# --- Функция получения данных с DTEK ---
 def get_data():
-    r = requests.post(
-        API_URL,
-        json=ADDRESS,
-        headers={"User-Agent": "Mozilla/5.0"},
-        timeout=15
-    )
-    r.raise_for_status()
-    return r.json()
+    session = requests.Session()
+    session.headers.update({
+        "User-Agent": "Mozilla/5.0",
+        "Accept": "application/json, text/javascript, */*; q=0.01",
+        "Content-Type": "application/json"
+    })
 
+    try:
+        r = session.post(API_URL, json=ADDRESS, timeout=15)
+        print("HTTP status:", r.status_code)
+        if r.status_code != 200:
+            print("❌ Сервер вернул статус", r.status_code)
+            return {}
+
+        # Безопасно парсим JSON
+        try:
+            data = r.json()
+            return data
+        except json.JSONDecodeError:
+            print("❌ Сервер вернул невалидный JSON:", r.text[:200])
+            return {}
+
+    except requests.RequestException as e:
+        print("❌ Ошибка запроса:", e)
+        return {}
+
+# --- Хеширование данных для отслеживания изменений ---
 def make_hash(data):
-    return hashlib.md5(
-        json.dumps(data, sort_keys=True, ensure_ascii=False).encode()
-    ).hexdigest()
+    return hashlib.md5(json.dumps(data, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
+# --- Форматирование сообщения для Telegram ---
 def format_message(data):
-    if not data.get("shutdowns"):
+    shutdowns = data.get("shutdowns")
+    if not shutdowns:
         return "⚡ Відключень електроенергії не заплановано"
 
     text = (
         "⚡ *Графік відключень електроенергії*\n\n"
-        f"📍 {ADDRESS['city']}, вул. {ADDRESS['street']}, буд. {ADDRESS['house']}\n\n"
+        f"📍 {ADDRESS['address']}\n\n"
     )
-
-    for s in data["shutdowns"]:
+    for s in shutdowns:
         text += (
-            f"🕒 *{s['date']}*\n"
-            f"Від: {s['time_from']}\n"
-            f"До: {s['time_to']}\n"
-            f"Причина: {s.get('reason', '—')}\n\n"
+            f"🕒 *{s.get('date','—')}*\n"
+            f"Від: {s.get('time_from','—')}\n"
+            f"До: {s.get('time_to','—')}\n"
+            f"Причина: {s.get('reason','—')}\n\n"
         )
-
     return text
 
+# --- Основной цикл проверки ---
 while True:
-    try:
-        data = get_data()
-        h = make_hash(data)
+    data = get_data()
+    if not data:
+        print("⏳ Нет данных от сервера")
+        time.sleep(CHECK_INTERVAL)
+        continue
 
-        if h != last_hash:
-            bot.send_message(
-                chat_id=CHAT_ID,
-                text=format_message(data),
-                parse_mode="Markdown"
-            )
-            last_hash = h
+    h = make_hash(data)
+    if h != last_hash:
+        message = format_message(data)
+        try:
+            bot.send_message(chat_id=CHAT_ID, text=message, parse_mode="Markdown")
             print("🔔 Изменения отправлены")
-        else:
-            print("⏳ Без изменений")
-
-    except Exception as e:
-        print("❌ Ошибка:", e)
+        except Exception as e:
+            print("❌ Ошибка отправки в Telegram:", e)
+        last_hash = h
+    else:
+        print("⏳ Без изменений")
 
     time.sleep(CHECK_INTERVAL)
