@@ -5,8 +5,8 @@ import time
 import threading
 
 # ====== НАСТРОЙКИ ======
-TOKEN = "ВАШ_API_ТОКЕН"  # токен бота
-CHAT_ID = "ВАШ_CHAT_ID"   # куда отправлять уведомления
+TOKEN = "8309773085:AAEUq_8obxdc2ioRo7NuKCWLpq2cD8eIKUI"  # токен бота
+CHAT_ID = "586571149"   # куда отправлять уведомления
 ADDRESS = "с-ще Коцюбинське, вулиця Паризька, будинок 3"
 DTEK_URL = "https://www.dtek-krem.com.ua/ua/shutdowns"
 CHECK_INTERVAL = 60  # интервал проверки в секундах
